@@ -1,0 +1,80 @@
+name: seal-build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache: false
+
+      - name: Stage module source (exclude .git and .github)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/modsrc"
+          rsync -a --exclude .git --exclude .github ./ "$RUNNER_TEMP/modsrc/"
+          ls -la "$RUNNER_TEMP/modsrc"
+
+      - name: Create module zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/zipper"
+          mkdir -p "$GITHUB_WORKSPACE/build_output"
+          cd "$RUNNER_TEMP/zipper"
+          cat > main.go <<'EOF'
+          package main
+
+          import (
+              "log"
+              "os"
+
+              "golang.org/x/mod/module"
+              "golang.org/x/mod/zip"
+          )
+
+          func main() {
+              if len(os.Args) != 5 {
+                  log.Fatal("usage: zipper <module-path> <version> <source-dir> <output-zip>")
+              }
+              modPath, version, srcDir, outPath := os.Args[1], os.Args[2], os.Args[3], os.Args[4]
+
+              mv := module.Version{Path: modPath, Version: version}
+              if err := module.Check(mv.Path, mv.Version); err != nil {
+                  log.Fatal(err)
+              }
+
+              f, err := os.Create(outPath)
+              if err != nil {
+                  log.Fatal(err)
+              }
+              if err := zip.CreateFromDir(f, mv, srcDir); err != nil {
+                  f.Close()
+                  log.Fatal(err)
+              }
+              if err := f.Close(); err != nil {
+                  log.Fatal(err)
+              }
+          }
+          EOF
+          go mod init example.com/zipper
+          go get golang.org/x/mod@v0.14.0
+          go run . github.com/Masterminds/goutils v1.1.0 "$RUNNER_TEMP/modsrc" "$GITHUB_WORKSPACE/build_output/v1.1.0.zip"
+          unzip -l "$GITHUB_WORKSPACE/build_output/v1.1.0.zip"
+
+      - name: Upload module zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-zip
+          path: build_output/v1.1.0.zip
+          if-no-files-found: error
